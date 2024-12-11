@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive City Services Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        #map { height: 500px; width: 100%; }
+        .search-container { margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        #loading { display: none; font-size: 18px; font-weight: bold; color: #007BFF; }
+    </style>
+</head>
+<body ng-app="cityMapApp" ng-controller="MapController">
+
+    <div class="search-container">
+        <input type="text" id="cityInput" ng-model="searchQuery" placeholder="Enter city" />
+        <button ng-click="searchCity()">Search City</button>
+        <select ng-model="selectedCategory" ng-change="loadPlaces()">
+            <option value="">Select Category</option>
+            <option value="healthcare">Healthcare Services</option>
+            <option value="education">Education Services</option>
+            <option value="police">Police Stations</option>
+            <option value="municipal">Municipal Corporation</option>
+        </select>
+        <span id="loading">Loading...</span>
+    </div>
+    
+    <div id="map"></div>
+
+    <script src="https://code.angularjs.org/1.8.2/angular.min.js"></script>
+    <script src="https://code.angularjs.org/1.8.2/angular-sanitize.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
+    <script>
+        var app = angular.module('cityMapApp', []);
+
+        app.controller('MapController', function($scope, $http) {
+            var map = L.map('map').setView([20.5937, 78.9629], 5);  // Default to India
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            var markers = [];
+            var userLocationMarker = null;
+            var userLat = null;
+            var userLon = null;
+            var routingControl = null;
+
+            // Show loading spinner
+            function showLoading() {
+                document.getElementById('loading').style.display = 'inline';
+            }
+
+            function hideLoading() {
+                document.getElementById('loading').style.display = 'none';
+            }
+
+            // Function to clear all markers
+            function clearMarkers() {
+                markers.forEach(function(marker) {
+                    map.removeLayer(marker);
+                });
+                markers = [];
+            }
+
+            // Function to search city using Nominatim (Geocoding)
+            $scope.searchCity = function() {
+                var city = $scope.searchQuery;
+                if (!city) {
+                    alert('Please enter a city name');
+                    return;
+                }
+
+                showLoading(); // Show loading
+                var searchUrl = `https://nominatim.openstreetmap.org/search?city=${city}&format=json`;
+
+                $http.get(searchUrl).then(function(response) {
+                    hideLoading(); // Hide loading
+                    if (response.data.length > 0) {
+                        var location = response.data[0];
+                        var lat = location.lat;
+                        var lon = location.lon;
+
+                        // Center the map to the city
+                        map.setView([lat, lon], 12);
+
+                        // Add a marker for the city
+                        L.marker([lat, lon]).addTo(map)
+                            .bindPopup('<b>' + city + '</b>')
+                            .openPopup();
+                    } else {
+                        alert('City not found');
+                    }
+                }, function(error) {
+                    hideLoading(); // Hide loading
+                    alert('Error searching city: ' + error.message);
+                });
+            };
+
+            // Function to load places based on selected category
+            $scope.loadPlaces = function() {
+                if (!$scope.selectedCategory || !$scope.searchQuery) {
+                    alert('Please select a category and enter a city');
+                    return;
+                }
+
+                showLoading(); // Show loading
+                var category = $scope.selectedCategory;
+                var city = $scope.searchQuery;
+
+                // Get city coordinates first
+                var citySearchUrl = `https://nominatim.openstreetmap.org/search?city=${city}&format=json`;
+
+                $http.get(citySearchUrl).then(function(response) {
+                    hideLoading(); // Hide loading
+                    if (response.data.length > 0) {
+                        var location = response.data[0];
+                        var lat = location.lat;
+                        var lon = location.lon;
+
+                        // Create the Overpass query
+                        var overpassUrl = '';
+                        if (category === 'healthcare') {
+                            overpassUrl = `https://overpass-api.de/api/interpreter?data=[out:json];node["amenity"="hospital"](around:5000,${lat},${lon});out;`;
+                        } else if (category === 'education') {
+                            overpassUrl = `https://overpass-api.de/api/interpreter?data=[out:json];node["amenity"="school"](around:5000,${lat},${lon});out;`;
+                        } else if (category === 'police') {
+                            overpassUrl = `https://overpass-api.de/api/interpreter?data=[out:json];node["amenity"="police"](around:5000,${lat},${lon});out;`;
+                        } else if (category === 'municipal') {
+                            overpassUrl = `https://overpass-api.de/api/interpreter?data=[out:json];node["amenity"="townhall"](around:5000,${lat},${lon});out;`;
+                        }
+
+                        // Make the Overpass API request
+                        $http.get(overpassUrl).then(function(response) {
+                            clearMarkers();  // Clear existing markers
+
+                            if (response.data.elements && response.data.elements.length > 0) {
+                                response.data.elements.forEach(function(place) {
+                                    var placeLatLng = [place.lat, place.lon];
+                                    var marker = L.marker(placeLatLng).addTo(map)
+                                        .bindPopup('<b>' + (place.tags.name || 'Unnamed') + '</b>')
+                                        .openPopup();
+                                    markers.push(marker);
+
+                                    // Add routing from user's location to the place
+                                    if (userLat && userLon) {
+                                        var userLatLng = [userLat, userLon];
+                                        if (routingControl) {
+                                            routingControl.setWaypoints([L.latLng(userLatLng), L.latLng(placeLatLng)]);
+                                        } else {
+                                            routingControl = L.routing.control({
+                                                waypoints: [
+                                                    L.latLng(userLatLng),
+                                                    L.latLng(placeLatLng)
+                                                ],
+                                                routeWhileDragging: true
+                                            }).addTo(map);
+                                        }
+                                    }
+
+                                    // Calculate the distance from user to the place
+                                    if (userLat && userLon) {
+                                        var userLatLng = L.latLng(userLat, userLon);
+                                        var placeLatLng = L.latLng(place.lat, place.lon);
+                                        var distance = userLatLng.distanceTo(placeLatLng).toFixed(2);  // in meters
+                                        marker.bindPopup(marker.getPopup().getContent() + "<br>Distance: " + distance + " meters").openPopup();
+                                    }
+                                });
+                            } else {
+                                alert('No results found for ' + category + ' in ' + city);
+                            }
+                        }, function(error) {
+                            alert('Error searching places: ' + error.message);
+                        });
+                    } else {
+                        alert('City not found');
+                    }
+                });
+            };
+
+            // Get the user's current location
+            function getUserLocation() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(function(position) {
+                        userLat = position.coords.latitude;
+                        userLon = position.coords.longitude;
+
+                        if (!userLocationMarker) {
+                            userLocationMarker = L.marker([userLat, userLon], {icon: L.icon({iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png'})}).addTo(map);
+                        }
+
+                        userLocationMarker.setLatLng([userLat, userLon]);
+                        map.setView([userLat, userLon], 12);  // Zoom to user's location
+                    });
+                } else {
+                    alert("Geolocation is not supported by this browser.");
+                }
+            }
+
+            // Call the function to get the user's location on page load
+            getUserLocation();
+        });
+    </script>
+</body>
+</html>
